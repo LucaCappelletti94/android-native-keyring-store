@@ -5,7 +5,7 @@ use regex::{Error as RegexError, Regex};
 use serde::{Deserialize, Serialize};
 
 use super::Cred;
-use super::vault::{AtomicVault, delete, lookup};
+use super::vault::{AtomicVault, delete, exists, lookup};
 
 /// The configurable parts of a Store.
 ///
@@ -178,12 +178,30 @@ impl Store {
     ///
     /// Once a store is deleted, it cannot be recovered.
     ///
+    /// A store whose Keystore key is gone can still be deleted.
+    ///
     /// Vaults can't be deleted by a process that has previously
     /// used them to back a store. This would leave any existing
     /// credentials with no vault to back them.
     pub fn delete(configuration: &HashMap<&str, &str>) -> Result<bool> {
         let config = StoreConfig::from_configuration(configuration)?;
         delete(&config)
+    }
+
+    /// Reports whether a store with the specified configuration exists, without creating it or
+    /// needing its Keystore key.
+    ///
+    /// `true` means the store is open or its file holds this configuration. Its Keystore key may
+    /// still be gone, in which case opening it fails with [BadStoreFormat](Error::BadStoreFormat).
+    ///
+    /// `false` means there is no store file, or one without credentials whose key is gone.
+    ///
+    /// [BadStoreFormat](Error::BadStoreFormat) means the file at the configuration's filename is
+    /// not a store, and [Invalid](Error::Invalid) means the store with this name has a different
+    /// configuration.
+    pub fn exists(configuration: &HashMap<&str, &str>) -> Result<bool> {
+        let config = StoreConfig::from_configuration(configuration)?;
+        exists(&config)
     }
 
     #[cfg(feature = "compile-tests")]
@@ -193,6 +211,15 @@ impl Store {
             .lock()
             .expect("Vault lock poisoned: report a bug!");
         vault.change_key()
+    }
+
+    #[cfg(feature = "compile-tests")]
+    pub fn remove_key(&self) -> Result<()> {
+        let vault = self
+            .vault
+            .lock()
+            .expect("Vault lock poisoned: report a bug!");
+        vault.remove_key()
     }
 }
 
