@@ -264,7 +264,7 @@ impl Vault {
         keystore.load(env)?;
         if keystore.contains_alias(env, &self.config.filename)? {
             let err = "Encryption key already exists";
-            return Err(Error::BadStoreFormat(err.to_string()))?;
+            return Err(Error::BadStoreFormat(err.to_string()).into());
         }
         let key_generator_spec = KeyGenParameterSpecBuilder::new(
             env,
