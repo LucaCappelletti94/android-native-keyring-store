@@ -5,13 +5,15 @@ use keyring_core::{Error, Result};
 use regex::Regex;
 
 use crate::{
-    error::AndroidKeyringResult,
+    error::{AndroidKeyringError, AndroidKeyringResult},
     keystore::{
-        BLOCK_MODE_GCM, ENCRYPTION_PADDING_NONE, KEY_ALGORITHM_AES, Key,
-        KeyGenParameterSpecBuilder, KeyGenerator, KeyStore, PROVIDER, PURPOSE_DECRYPT,
-        PURPOSE_ENCRYPT,
+        AUTH_BIOMETRIC_STRONG, AUTH_DEVICE_CREDENTIAL, BLOCK_MODE_GCM, ENCRYPTION_PADDING_NONE,
+        KEY_ALGORITHM_AES, Key, KeyGenParameterSpecBuilder, KeyGenerator, KeyStore, PROVIDER,
+        PURPOSE_DECRYPT, PURPOSE_ENCRYPT,
     },
+    methods::ClassDecl,
     shared_preferences::{Context, MODE_PRIVATE, SharedPreferences},
+    throwable::Throwable,
 };
 
 use super::store::StoreConfig;
@@ -115,6 +117,8 @@ impl std::fmt::Debug for Vault {
 }
 
 const CONFIG_KEY: &str = "vaultConfig";
+const USER_NOT_AUTHENTICATED: ClassDecl =
+    ClassDecl("Landroid/security/keystore/UserNotAuthenticatedException;");
 
 impl Vault {
     // Find an existing vault with the same name and config
@@ -236,10 +240,11 @@ impl Vault {
     {
         let mut env = self.vm.attach_current_thread()?;
         let result = f(&mut env);
-        if env.exception_check()? {
+        if let Some(exception) = Throwable::take_pending(&mut env)? {
             log::error!("Exception in vault {:?}: see console", self.config.name);
-            env.exception_describe()?;
-            env.exception_clear()?;
+            if exception.is_instance_of(&mut env, USER_NOT_AUTHENTICATED)? {
+                return Err(AndroidKeyringError::UserNotAuthenticated);
+            }
         }
         result
     }
@@ -266,15 +271,24 @@ impl Vault {
             let err = "Encryption key already exists";
             return Err(Error::BadStoreFormat(err.to_string()).into());
         }
-        let key_generator_spec = KeyGenParameterSpecBuilder::new(
+        let mut builder = KeyGenParameterSpecBuilder::new(
             env,
             &self.config.filename,
             PURPOSE_DECRYPT | PURPOSE_ENCRYPT,
         )?
         .set_block_modes(env, &[BLOCK_MODE_GCM])?
         .set_encryption_paddings(env, &[ENCRYPTION_PADDING_NONE])?
-        .set_user_authentication_required(env, false)?
-        .build(env)?;
+        .set_user_authentication_required(env, self.config.user_auth_timeout.is_some())?;
+        if let Some(seconds) = self.config.user_auth_timeout {
+            let seconds = i32::try_from(seconds).map_err(|_| {
+                Error::Invalid("user-auth-timeout".to_string(), "is too large".to_string())
+            })?;
+            // A strong biometric or the device credential opens the key, and allowing the
+            // credential keeps it valid when fingerprints are re-enrolled.
+            let authenticators = AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL;
+            builder = builder.set_user_authentication_parameters(env, seconds, authenticators)?;
+        }
+        let key_generator_spec = builder.build(env)?;
         let key_generator = KeyGenerator::get_instance(env, KEY_ALGORITHM_AES, PROVIDER)?;
         key_generator.init(env, key_generator_spec.into())?;
         let key = key_generator.generate_key(env)?;

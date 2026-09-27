@@ -12,10 +12,14 @@ use super::vault::{AtomicVault, delete, lookup};
 /// It's serializable so that it can be kept
 /// in the store's SharedPreferences file as a JSON string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StoreConfig {
     pub name: String,
     pub filename: String,
     pub divider: String,
+    /// Seconds that one user authentication opens the store's key for, if it needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_auth_timeout: Option<u32>,
 }
 
 impl Default for StoreConfig {
@@ -24,6 +28,7 @@ impl Default for StoreConfig {
             name: "default".to_string(),
             filename: "keyring-default".to_string(),
             divider: "\u{FEFF}@\u{FEFF}".to_string(),
+            user_auth_timeout: None,
         }
     }
 }
@@ -45,12 +50,28 @@ impl StoreConfig {
             let msg = format!("doesn't match existing divider {:?}", other.divider);
             return Err(Error::Invalid("divider".to_string(), msg));
         }
+        if self.user_auth_timeout != other.user_auth_timeout {
+            let msg = format!(
+                "doesn't match existing user-auth-timeout {:?}",
+                other.user_auth_timeout
+            );
+            return Err(Error::Invalid("user-auth-timeout".to_string(), msg));
+        }
         Ok(())
     }
 
     /// Create a StoreConfig from a configuration HashMap
     pub fn from_configuration(configuration: &HashMap<&str, &str>) -> Result<Self> {
-        let mods = parse_attributes(&["+name", "+filename", "+divider"], Some(configuration))?;
+        let mods = parse_attributes(
+            &[
+                "+name",
+                "+filename",
+                "+divider",
+                "*user-auth-required",
+                "+user-auth-timeout",
+            ],
+            Some(configuration),
+        )?;
         let mut config = StoreConfig::default();
         if let Some(name) = mods.get("name") {
             config.name = name.to_string();
@@ -68,6 +89,24 @@ impl StoreConfig {
                 return Err(Error::Invalid("divider".to_string(), err));
             }
             config.divider = divider.to_string();
+        }
+        let required = mods.get("user-auth-required").is_some_and(|v| v == "true");
+        let timeout_err = |msg: &str| Error::Invalid("user-auth-timeout".to_string(), msg.into());
+        config.user_auth_timeout = match (required, mods.get("user-auth-timeout")) {
+            (true, Some(timeout)) => Some(
+                timeout
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|seconds| (1..=i32::MAX.unsigned_abs()).contains(seconds))
+                    .ok_or_else(|| timeout_err("must be from 1 to 2147483647 seconds"))?,
+            ),
+            (true, None) => return Err(timeout_err("is required with user-auth-required")),
+            (false, Some(_)) => return Err(timeout_err("requires user-auth-required")),
+            (false, None) => None,
+        };
+        if required && config.name == "default" {
+            let err = "must not be the default when user authentication is required";
+            return Err(Error::Invalid("name".to_string(), err.to_string()));
         }
         Ok(config)
     }
@@ -102,8 +141,9 @@ impl Store {
     /// Returns a store with the specified configuration,
     /// creating one if necessary.
     ///
-    /// Allowed configuration keys are `name`, `filename`, and `divider`.
-    /// None are required, but any that are supplied must be non-empty.
+    /// Allowed configuration keys are `name`, `filename`, `divider`, `user-auth-required`,
+    /// and `user-auth-timeout`. None are required, but any that are supplied must be non-empty,
+    /// and `user-auth-required` must be `true` or `false`.
     ///
     /// The value of `name` defaults to `default`. Stores names are unique, so you can't
     /// create two stores with the same name (even if they use different configurations).
@@ -115,6 +155,9 @@ impl Store {
     /// when printed as part of a string, looks like `@` because
     /// the BOM character is considered a non-spacing word-joining
     /// character. The divider _must_ contain a non-alphabetic character.
+    ///
+    /// For `user-auth-required` and `user-auth-timeout`, see
+    /// [the module docs](super#user-authentication).
     pub fn new_with_configuration(configuration: &HashMap<&str, &str>) -> Result<Arc<Self>> {
         let config = StoreConfig::from_configuration(configuration)?;
         Store::new_with_store_config(config)
@@ -270,4 +313,54 @@ fn generate_instance_id() -> String {
         env!("CARGO_PKG_VERSION"),
         elapsed.as_secs_f64()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(pairs: &[(&str, &str)]) -> Result<StoreConfig> {
+        StoreConfig::from_configuration(&pairs.iter().copied().collect())
+    }
+
+    const NAME: (&str, &str) = ("name", "vault");
+    const REQUIRED: (&str, &str) = ("user-auth-required", "true");
+
+    fn assert_invalid(pairs: &[(&str, &str)], expected_key: &str) {
+        match parse(pairs) {
+            Err(Error::Invalid(key, _)) => assert_eq!(key, expected_key, "{pairs:?}"),
+            other => panic!("{pairs:?}: expected Invalid({expected_key:?}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_auth_timeout_needs_both_keys() {
+        let config = parse(&[NAME, REQUIRED, ("user-auth-timeout", "30")]).unwrap();
+        assert_eq!(config.user_auth_timeout, Some(30));
+        let config = parse(&[NAME, ("user-auth-required", "false")]).unwrap();
+        assert_eq!(config.user_auth_timeout, None);
+        assert_invalid(&[NAME, REQUIRED], "user-auth-timeout");
+        assert_invalid(&[NAME, ("user-auth-timeout", "30")], "user-auth-timeout");
+        assert_invalid(&[REQUIRED, ("user-auth-timeout", "30")], "name");
+    }
+
+    #[test]
+    fn user_auth_timeout_must_fit_the_keystore_range() {
+        for timeout in ["0", "-1", "2147483648", "soon"] {
+            assert_invalid(
+                &[NAME, REQUIRED, ("user-auth-timeout", timeout)],
+                "user-auth-timeout",
+            );
+        }
+        let config = parse(&[NAME, REQUIRED, ("user-auth-timeout", "2147483647")]).unwrap();
+        assert_eq!(config.user_auth_timeout, Some(2147483647));
+    }
+
+    #[test]
+    fn stored_config_without_user_auth_keeps_its_earlier_format() {
+        let stored = r#"{"name":"vault","filename":"keyring-vault","divider":"@"}"#;
+        let config: StoreConfig = serde_json::from_str(stored).unwrap();
+        assert_eq!(config.user_auth_timeout, None);
+        assert_eq!(serde_json::to_string(&config).unwrap(), stored);
+    }
 }

@@ -54,6 +54,13 @@ Searches do not return entries in the SharedPreferences file
 that don't conform to the credential naming conventions. These can
 only have been added by third parties, so they are assumed
 not to be valid credentials.
+
+## User Authentication
+
+With `user-auth-required` set to `true`, a store opens for `user-auth-timeout` seconds after the
+user authenticates with a strong biometric or the device credential, and otherwise fails with
+[NoStorageAccess](keyring_core::Error::NoStorageAccess). It needs a non-default `name`,
+Android 11 and a secure lock screen, whose removal destroys its key.
  */
 mod vault;
 #[cfg(feature = "compile-tests")]
