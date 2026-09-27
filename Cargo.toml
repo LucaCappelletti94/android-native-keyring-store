@@ -34,6 +34,9 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
 
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [package.metadata.docs.rs]
 targets = ["aarch64-linux-android"]
 features = ["legacy"]

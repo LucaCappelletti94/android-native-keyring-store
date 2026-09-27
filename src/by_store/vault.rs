@@ -119,7 +119,7 @@ const CONFIG_KEY: &str = "vaultConfig";
 impl Vault {
     // Find an existing vault with the same name and config
     fn find(config: &StoreConfig) -> Result<Option<Self>> {
-        let (vm, context) = get_ndk_context()?;
+        let (vm, context) = crate::android_context()?;
         let vault = Self {
             vm,
             context,
@@ -149,7 +149,7 @@ impl Vault {
             return Err(Error::Invalid("divider".to_string(), err));
         }
         log::debug!("Creating new vault with config {config:?}");
-        let (vm, context) = get_ndk_context()?;
+        let (vm, context) = crate::android_context()?;
         let mut vault = Self {
             vm,
             context,
@@ -315,19 +315,4 @@ impl Vault {
         let ctx = Context::from_raw(self.context.clone());
         Ok(ctx.delete_shared_preferences(env, &self.config.filename)?)
     }
-}
-
-fn get_ndk_context() -> AndroidKeyringResult<(Arc<JavaVM>, GlobalRef)> {
-    let ctx = ndk_context::android_context();
-    let vm = ctx.vm().cast();
-    let activity = ctx.context();
-
-    let java_vm = unsafe { JavaVM::from_raw(vm)? };
-    let env = java_vm.attach_current_thread()?;
-    let vm = Arc::new(env.get_java_vm()?);
-
-    let j_context = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-    let context = env.new_global_ref(j_context)?;
-
-    Ok((vm, context))
 }
