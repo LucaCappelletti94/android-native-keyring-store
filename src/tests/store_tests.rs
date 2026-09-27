@@ -193,10 +193,8 @@ fn concurrent_access() -> keyring_core::Result<()> {
         })?;
     }
     let entry = Entry::new("concurrent", "user")?;
-    match entry.get_password() {
-        Ok(s) => log::debug!("thread {s} finished last"),
-        Err(e) => return Err(e),
-    }
+    let s = entry.get_password()?;
+    log::debug!("thread {s} finished last");
     Ok(())
 }
 
