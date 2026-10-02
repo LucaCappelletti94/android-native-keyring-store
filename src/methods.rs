@@ -1,6 +1,6 @@
 use jni::{
     JNIEnv,
-    objects::{GlobalRef, JByteArray, JObject, JValue, JValueGen, ReleaseMode},
+    objects::{GlobalRef, JByteArray, JObject, JValue, JValueGen},
     signature::{Primitive, ReturnType},
 };
 
@@ -304,10 +304,7 @@ impl ToValue for Vec<u16> {
 
     fn to_value<'a>(&self, env: &mut JNIEnv<'a>) -> JResult<JValueGen<JObject<'a>>> {
         let chars = env.new_char_array(self.len() as i32)?;
-        unsafe {
-            let mut chars_write = env.get_array_elements(&chars, ReleaseMode::CopyBack)?;
-            chars_write.copy_from_slice(self);
-        }
+        env.set_char_array_region(&chars, 0, self)?;
         let chars: JObject = chars.into();
         Ok(chars.into())
     }
