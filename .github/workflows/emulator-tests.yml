@@ -1,0 +1,58 @@
+name: Emulator tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  keyring-tester:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          toolchain: stable
+          target: x86_64-linux-android
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          script: |
+            set -eu
+            sdkmanager "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0"
+            export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
+            cargo build --release --target x86_64-linux-android --features legacy,compile-tests,android-log
+            mkdir -p keyring-tester/app/src/main/jniLibs/x86_64
+            cp target/x86_64-linux-android/release/libandroid_native_keyring_store.so keyring-tester/app/src/main/jniLibs/x86_64/
+            cd keyring-tester
+            ./gradlew --no-daemon assembleDebug
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb shell wm dismiss-keyguard
+            adb shell am start -n com.brotsky.android.testing.keyring/.MainActivity
+            line=""
+            for _ in $(seq 1 60); do
+              line=$(adb logcat -d -s unit-test | grep -E "Overall: [0-9]+ successes, [0-9]+ failures" | tail -1)
+              [ -n "$line" ] && break
+              sleep 5
+            done
+            adb logcat -d -s unit-test
+            [ -n "$line" ]
+            echo "$line"
+            [ "$(echo "$line" | sed 's/.*Overall: [0-9]* successes, \([0-9]*\) failures.*/\1/')" = "0" ]
