@@ -3,7 +3,7 @@ use std::panic::catch_unwind;
 
 use android_log_sys::LogPriority;
 
-use keyring_core::Entry;
+use keyring_core::{Entry, api::CredentialStoreApi};
 
 pub fn run_tests() -> (usize, usize) {
     let testing = [
@@ -13,8 +13,11 @@ pub fn run_tests() -> (usize, usize) {
         ("concurrent_access", concurrent_access),
         ("search", search),
         ("teardown", teardown),
+        ("user_auth_timeout", user_auth_timeout),
     ]
     .iter()
+    // user_auth_timeout needs a secure lock screen and a device unlocked in the last 300 seconds.
+    .filter(|(name, _)| cfg!(feature = "user-auth-tests") || *name != "user_auth_timeout")
     .map(|(name, entry)| {
         (name, move || -> keyring_core::Result<()> {
             catch_unwind(entry)
@@ -85,6 +88,8 @@ fn teardown() -> keyring_core::Result<()> {
 
 pub fn cleanup() -> keyring_core::Result<()> {
     // make sure there's nothing left from prior runs, and test store deletion
+    crate::Store::delete(&HashMap::from(AUTH_OPEN_CONFIG))?;
+    crate::Store::delete(&HashMap::from(AUTH_EXPIRED_CONFIG))?;
     let store_config = HashMap::from(STORE_CONFIG);
     if crate::Store::delete(&store_config)? {
         log::info!("Test store successfully deleted");
@@ -212,4 +217,34 @@ fn search() -> keyring_core::Result<()> {
         return bad_result("both", &format!("2, got {}", both.len()));
     }
     Ok(())
+}
+
+const AUTH_OPEN_CONFIG: [(&str, &str); 4] = [
+    ("name", "auth-open-test"),
+    ("divider", "@"),
+    ("user-auth-required", "true"),
+    ("user-auth-timeout", "300"),
+];
+const AUTH_EXPIRED_CONFIG: [(&str, &str); 4] = [
+    ("name", "auth-expired-test"),
+    ("divider", "@"),
+    ("user-auth-required", "true"),
+    ("user-auth-timeout", "1"),
+];
+
+fn user_auth_timeout() -> keyring_core::Result<()> {
+    let store = crate::Store::new_with_configuration(&HashMap::from(AUTH_OPEN_CONFIG))?;
+    let entry = store.build("auth", "user", None)?;
+    entry.set_password("open")?;
+    match entry.get_password() {
+        Ok(p) if p == "open" => {}
+        r => return bad_result("get_password", &format!("'open', got {r:?}")),
+    }
+    let store = crate::Store::new_with_configuration(&HashMap::from(AUTH_EXPIRED_CONFIG))?;
+    let entry = store.build("auth", "user", None)?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    match entry.set_password("expired") {
+        Err(keyring_core::Error::NoStorageAccess(_)) => Ok(()),
+        r => bad_result("set_password", &format!("NoStorageAccess, got {r:?}")),
+    }
 }
