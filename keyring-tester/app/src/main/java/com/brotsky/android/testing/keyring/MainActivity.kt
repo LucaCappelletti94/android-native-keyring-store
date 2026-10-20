@@ -17,6 +17,10 @@ import javax.crypto.Cipher
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!intent.getBooleanExtra("context-tested", false)) {
+            System.loadLibrary("android_native_keyring_store")
+            check(KeyringTests.runContextTests(applicationContext))
+        }
         Keyring.initializeNdkContext(applicationContext)
         enableEdgeToEdge()
         setContentView(R.layout.start_tests)
@@ -27,6 +31,8 @@ class MainActivity : AppCompatActivity() {
         }
         KeyringLog.setLog("android_native_keyring_store=trace")
         KeyringTests.runAllTests(applicationContext)
+        val run = intent.getStringExtra("run") ?: "interactive"
+        Log.i("unit-test", "Explicit foreground done run=$run")
         setContentView(R.layout.finish_tests)
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
